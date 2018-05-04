@@ -31,7 +31,13 @@ class StreamIngestion(object):
     all messages in the queue are processed
 
     """
-    def __init__(self,validation_rules,bootstrap_servers,debug = False,streaming_context_size = 10 ):
+    def __init__(self,\
+                 validation_rules,\
+                 bootstrap_servers,\
+                 table,
+                 datasource,
+                 debug = False,\
+                 streaming_context_size = 10 ):
         self.debug = debug
         self.validation_rules = validation_rules
         self.sc = SparkContext(appName="PythonSparkStreamingKafka")
@@ -39,9 +45,24 @@ class StreamIngestion(object):
         self.ssc = StreamingContext(self.sc,streaming_context_size)
         self.sqlc = SQLContext(self.sc)
         self.jdbc_url , self.jdbc_properties = get_url()
-        self.producer = KafkaWriter(bootstrap_servers)
+        self.producer = KafkaWriter(bootstrap_servers,datasource,table)
         debug_msg = "create StreamWorker with jdbc connection {}".format(self.jdbc_url)
+        self.datasource  = datasource
+        self.table = table
         self.produce_debug(debug_msg)
+
+    def test_SQL(self):
+        self.get_table_df("part_customers")
+        self.produce_debug(dir(self.part_customers))
+        self.produce_debug(str(type(self.part_customers)))
+        self.part_customers.show()
+        self.start_stream()
+
+    def test_stream(self):
+        kafkaStream = KafkaUtils.createDirectStream(self.ssc, ['test'], {"metadata.broker.list":",".join(BOOTSTRAP_SERVERS)})
+        data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
+        data_ds.foreachRDD(self.producer.test_handler)
+        self.start_stream()
 
     def produce_debug(self,msg):
         if self.debug:
@@ -66,11 +87,15 @@ class StreamIngestion(object):
         records = message.collect()
         self.produce_debug(records)
         for record in records:
-            self.validation_method(record,self.validation_rule.config,self.validation_rule.dependencies[0])
+            if isinstance(record,str):
+                record = json.loads(record)
+            if "record" in list(record.keys()):
+                record = record["record"]
+            validity = self.validation_method(record,self.validation_rule.config,self.validation_rule.dependencies[0])
+            self.producer.send_next(record, validity, self.validation_rule.rejectionrule)
 
-
-    def create_validation_stream(self,datasource,table):
-        topic = get_topic(datasource,table)
+    def create_validation_stream(self):
+        topic = get_topic(self.datasource,self.table)
         self.produce_debug("creating directstream on topic {}".format(topic))
         kafkaStream = KafkaUtils.createDirectStream(self.ssc,\
                                                     [topic],\
@@ -82,19 +107,6 @@ class StreamIngestion(object):
             self.validation_method = getattr(self,rule.method)
             self.validation_rule = rule
             data_ds.foreachRDD(self.validation_handler)
-        self.start_stream()
-
-    def test_stream(self):
-        kafkaStream = KafkaUtils.createDirectStream(self.ssc, ['test'], {"metadata.broker.list":",".join(BOOTSTRAP_SERVERS)})
-        data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
-        data_ds.foreachRDD(self.producer.test_handler)
-        self.start_stream()
-
-    def test_SQL(self):
-        self.get_table_df("part_customers")
-        self.produce_debug(dir(self.part_customers))
-        self.produce_debug(str(type(self.part_customers)))
-        self.part_customers.show()
         self.start_stream()
 
     def evaluate_rules(self,force_table = False):
@@ -140,19 +152,26 @@ class StreamIngestion(object):
         self.evaluate_rules()
         self.load_dependencies()
 
-    def check_exists(self,record,config = False,dependency = False):
-        if "record" in list(record.keys()):
-            record = record["record"]
 
-        print("running check_exists {}, {}".format( config, dependency))
+    def check_exists(self,record,config = False,dependency = False):
+        self.produce_debug("running check_exists {}, {}".format(config, dependency))
         df = getattr(self,dependency)
         query =[]
         for record_col,dep_col in config.items():
-            query.append("{} = {}".format(dep_col,record[record_col))
+            try:
+                query.append("{} = {}".format(dep_col,record[record_col]))
+            except Exception as e:
+                self.produce_debug("error {} on record of type {}".format(e, type(record)))
+                self.produce_debug("record keys {}".format(",".join(record.keys())))
+                raise e
         query = " AND ".join(query)
-        self.produce_debug("query is {}".format(query))
         result = df.filter(query)
-        self.produce_debug(result)
+        if result.count() >= 1:
+            valid = True
+        else:
+            valid = False
+        return valid
+
 
 def main(bootstrap_servers):
     validation_rules = [ValidationRule(name = "check_customer_ids",\
@@ -161,15 +180,14 @@ def main(bootstrap_servers):
                                 "part_id"],\
                         dependencies = ["part_customers"],\
                         method = "check_exists",\
-                        config = {"supplier_id":"supplier_id",\
-                                "part_id":"part_id"})]
-
-    worker = StreamIngestion(validation_rules,bootstrap_servers,debug = True)
+                        config = {"customer_id":"customer_id",\
+                                "part_id":"part_id"},
+                        rejectionrule = "notexists")]
+    worker = StreamIngestion(validation_rules,bootstrap_servers,datasource = "test_database",table = "sales_orders",debug = True)
     worker.produce_debug("running testsql")
     worker.evaluate_rules()
     worker.load_dependencies()
-
-    worker.create_validation_stream("test_database","sales_orders")
+    worker.create_validation_stream()
 
 if __name__ == '__main__':
     global BOOTSTRAP_SERVERS
