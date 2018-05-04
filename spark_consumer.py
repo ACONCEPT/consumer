@@ -152,7 +152,6 @@ class StreamIngestion(object):
         self.evaluate_rules()
         self.load_dependencies()
 
-
     def check_exists(self,record,config = False,dependency = False):
         self.produce_debug("running check_exists {}, {}".format(config, dependency))
         df = getattr(self,dependency)
@@ -194,6 +193,8 @@ if __name__ == '__main__':
     global producer
     if "joe" in os.environ["HOME"]:
         print("setting boosttrap servers to localhost in spark consumer")
-        BOOTSTRAP_SERVERS = TESTING_SERVER
-    main(BOOTSTRAP_SERVERS)
+        bootstrap_servers = TESTING_SERVER
+    else:
+        bootstrap_servers = BOOTSTRAP_SERVERS
+    main(bootstrap_servers)
 
