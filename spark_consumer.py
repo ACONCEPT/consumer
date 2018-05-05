@@ -7,7 +7,7 @@ from pyspark.streaming.kafka import KafkaUtils
 from pyspark.sql import DataFrameReader
 from pyspark.sql.utils import IllegalArgumentException
 from helpers.get_data import get_url
-from helpers.validation import ValidationRule
+from helpers.validation import validation_rules_from_file
 from helpers.kafka import KafkaWriter, get_topic
 from config.config import BOOTSTRAP_SERVERS,ZOOKEEPER_SERVERS,TESTING_SERVER
 import json, math, datetime
@@ -42,6 +42,7 @@ class StreamIngestion(object):
         self.validation_rules = validation_rules
         self.sc = SparkContext(appName="PythonSparkStreamingKafka")
         self.sc.setLogLevel("WARN")
+        self.bootstrap_servers = bootstrap_servers
         self.ssc = StreamingContext(self.sc,streaming_context_size)
         self.sqlc = SQLContext(self.sc)
         self.jdbc_url , self.jdbc_properties = get_url()
@@ -59,7 +60,7 @@ class StreamIngestion(object):
         self.start_stream()
 
     def test_stream(self):
-        kafkaStream = KafkaUtils.createDirectStream(self.ssc, ['test'], {"metadata.broker.list":",".join(BOOTSTRAP_SERVERS)})
+        kafkaStream = KafkaUtils.createDirectStream(self.ssc, ['test'], {"metadata.broker.list":",".join(self.bootstrap_servers)})
         data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
         data_ds.foreachRDD(self.producer.test_handler)
         self.start_stream()
@@ -83,24 +84,30 @@ class StreamIngestion(object):
         self.ssc.awaitTermination()
 
     def validation_handler(self,datetime,message):
-        self.produce_debug("made it to validation handler with values {} and {}".format(datetime,message))
         records = message.collect()
+        self.produce_debug("made it to validation handler with values {} and {} records are {}".format(datetime,message,records))
         self.produce_debug(records)
         for record in records:
+            self.produce_debug("processing a record... ")
             if isinstance(record,str):
                 record = json.loads(record)
             if "record" in list(record.keys()):
                 record = record["record"]
             validity = self.validation_method(record,self.validation_rule.config,self.validation_rule.dependencies[0])
+            self.produce_debug("record validity {}".format(validity))
             self.producer.send_next(record, validity, self.validation_rule.rejectionrule)
 
     def create_validation_stream(self):
         topic = get_topic(self.datasource,self.table)
-        self.produce_debug("creating directstream on topic {}".format(topic))
+        brokerlist = ",".join(self.bootstrap_servers)
+        self.produce_debug("creating directstream on topic {}\nbrokerlist {}".format(topic,brokerlist))
+        kafka_properties = {}
+        kafka_properties["metadata.broker.list"] = brokerlist
+#        kafka_properties["auto.offset.reset"] = "smallest"
         kafkaStream = KafkaUtils.createDirectStream(self.ssc,\
                                                     [topic],\
-                                                    {"metadata.broker.list":",".\
-                                                     join(BOOTSTRAP_SERVERS)})
+                                                    kafka_properties
+                                                    )
         data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
         for rule in self.stream_rules:
             self.produce_debug("processing rule {} on {}".format(rule,self.table))
@@ -135,8 +142,9 @@ class StreamIngestion(object):
         if not hasattr(self,"dependencies"):
             self.dependencies = []
         if isinstance(new_dep,list):
-            self.dependencies += new_dep
-        else:
+            new_deps = [d for d in new_dep if d not in self.dependencies]
+            self.dependencies += new_deps
+        elif new_dep not in self.dependencies:
             self.dependencies.append(new_dep)
 
     def load_dependencies(self):
@@ -173,28 +181,17 @@ class StreamIngestion(object):
 
 
 def main(bootstrap_servers):
-    validation_rules = [ValidationRule(name = "check_customer_ids",\
-                        table = "sales_orders",\
-                        column = ["customer_id",\
-                                "part_id"],\
-                        dependencies = ["part_customers"],\
-                        method = "check_exists",\
-                        config = {"customer_id":"customer_id",\
-                                "part_id":"part_id"},
-                        rejectionrule = "notexists")]
+    validation_rules = validation_rules_from_file()
     worker = StreamIngestion(validation_rules,bootstrap_servers,datasource = "test_database",table = "sales_orders",debug = True)
-    worker.produce_debug("running testsql")
     worker.evaluate_rules()
     worker.load_dependencies()
     worker.create_validation_stream()
 
 if __name__ == '__main__':
-    global BOOTSTRAP_SERVERS
-    global producer
     if "joe" in os.environ["HOME"]:
         print("setting boosttrap servers to localhost in spark consumer")
         bootstrap_servers = TESTING_SERVER
-    else:
+    elif "ubuntu" in os.environ["HOME"]:
         bootstrap_servers = BOOTSTRAP_SERVERS
     main(bootstrap_servers)
 
