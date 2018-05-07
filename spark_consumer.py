@@ -81,7 +81,7 @@ class StreamValidation(object):
         self.ssc.awaitTermination()
 
     def validation_handler(self,datetime,message):
-        records = message.collect()
+#        records = message.collect()
         self.produce_debug("made it to validation handler with values {} and {} records are {}".format(datetime,message,records))
         self.produce_debug(records)
         for record in records:
