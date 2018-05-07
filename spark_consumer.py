@@ -42,7 +42,7 @@ class StreamValidation(object):
         self.bootstrap_servers = bootstrap_servers
         self.ssc = StreamingContext(self.sc,streaming_context_size)
         self.sqlc = SQLContext(self.sc)
-        self.jdbc_url , self.jdbc_properties = get_url()
+        self.jdbc_url , self.jdbc_properties = get_url(datasource)
         self.producer = KafkaWriter(bootstrap_servers,datasource,table)
         debug_msg = "create StreamWorker with jdbc connection {}".format(self.jdbc_url)
         self.datasource  = datasource
