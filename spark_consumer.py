@@ -1,23 +1,20 @@
 import os
 import sys
-sys.path.append(os.environ["PROJECT_HOME"])
 from pyspark import SparkContext, SQLContext
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
 from pyspark.sql import DataFrameReader
 from pyspark.sql.utils import IllegalArgumentException
 from helpers.get_data import get_url
-from helpers.validation import validation_rules_from_file
 from helpers.kafka import KafkaWriter, get_topic
-from config.config import BOOTSTRAP_SERVERS,ZOOKEEPER_SERVERS,TESTING_SERVER
 import json, math, datetime
 
 def methodlist(obj):
     return [x for x in dir(obj) if x[0] != "_"]
 
-class StreamIngestion(object):
+class StreamValidation(object):
     """
-    Stream Ingestion object takes a set of Validation Rules related to a single input stream
+    Stream Validation object takes a set of Validation Rules related to a single input stream
     as input.
 
     TODO: The first task is to validate the rule's configuration based on the meta of
@@ -106,8 +103,8 @@ class StreamIngestion(object):
 #        kafka_properties["auto.offset.reset"] = "smallest"
         kafkaStream = KafkaUtils.createDirectStream(self.ssc,\
                                                     [topic],\
-                                                    kafka_properties
-                                                    )
+                                                    kafka_properties)
+
         data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
         for rule in self.stream_rules:
             self.produce_debug("processing rule {} on {}".format(rule,self.table))
@@ -180,18 +177,5 @@ class StreamIngestion(object):
         return valid
 
 
-def main(bootstrap_servers):
-    validation_rules = validation_rules_from_file()
-    worker = StreamIngestion(validation_rules,bootstrap_servers,datasource = "test_database",table = "sales_orders",debug = True)
-    worker.evaluate_rules()
-    worker.load_dependencies()
-    worker.create_validation_stream()
-
 if __name__ == '__main__':
-    if "joe" in os.environ["HOME"]:
-        print("setting boosttrap servers to localhost in spark consumer")
-        bootstrap_servers = TESTING_SERVER
-    elif "ubuntu" in os.environ["HOME"]:
-        bootstrap_servers = BOOTSTRAP_SERVERS
-    main(bootstrap_servers)
-
+    pass
