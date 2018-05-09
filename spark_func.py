@@ -8,6 +8,7 @@ from pyspark.sql import Row,SparkSession
 from pyspark.sql.functions import to_json,struct
 from pyspark.sql.utils import IllegalArgumentException
 from helpers.get_data import get_url
+from pyspark.sql.types import DateType
 from helpers.kafka import KafkaWriter, get_topic, getjsonproducer,getstrproducer
 from config import config
 import json, math, datetime
@@ -53,8 +54,9 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     #decode json to ds
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
-
     rule = validation_config[0]
+
+
     def check_exists(time,rdd):
         rdd  = rdd.map(lambda v:json.loads(v)["record"])
         producer.produce_debug("in process.. {}".format(time))
@@ -72,16 +74,66 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             valid_json = validated.toJSON().collect()
             for data in valid_json:
                 producer.produce_valid(data)
+            del valid_json
+            invalid_json = invalid.toJSON().collect()
+            for data in valid_json:
+                producer.produce_invalid(data)
         except ValueError as e:
             producer.produce_debug("restart the stream producer! ")
 
+
+    def check_lead_time(time,rdd):
+        rdd  = rdd.map(lambda v:json.loads(v)["record"])
+        producer.produce_debug("in process.. {}".format(time))
+        # should be only one dependency
+        for d in rule.dependencies:
+            producer.produce_debug("getting dependency for {}".format(d))
+            name = rule.name
+            dependency_df = get_table_df(d)
+        config = rule.config
+        config ["leadtime_column"]= "delivery_lead_time"
+        config ["start_column"] = "order_creation_date"
+        config ["end_column"] = "order_expected_delivery"
+        try:
+            stream_df = spark.createDataFrame(rdd)
+            for data in valid_json:
+                producer.produce_valid(data)
+            del valid_json
+            invalid_json = invalid.toJSON().collect()
+            for data in valid_json:
+                producer.produce_invalid(data)
+        except ValueError as e:
+            producer.produce_debug("restart the stream producer! ")
+
+    def check_open_order(time,rdd):
+        rdd  = rdd.map(lambda v:json.loads(v)["record"])
+        producer.produce_debug("in process.. {}".format(time))
+        # should be only one dependency
+        for d in rule.dependencies:
+            producer.produce_debug("getting dependency for {}".format(d))
+            name = rule.name
+            dependency_df = get_table_df(d)
+        config = rule.config
+        config = {}
+        config["status_column"] = "order_status"
+        config["open_order_statuses"] = ["000-000","111-111"]
+        config["open_order_threshold"] = 90
+        try:
+            stream_df = spark.createDataFrame(rdd)
+            for data in valid_json:
+                producer.produce_valid(data)
+            del valid_json
+            invalid_json = invalid.toJSON().collect()
+            for data in valid_json:
+                producer.produce_invalid(data)
+        except ValueError as e:
+            producer.produce_debug("restart the stream producer! ")
+
+
     validation_functions = {"check_exists":check_exists}
-#    module = sys.modules[__name__]
-#    validator = getattr(module,rule.method)
     validator = validation_functions.get(rule.method)
     data_ds.foreachRDD(validator)
     ssc.start()
     ssc.awaitTermination()
 
 
-# Write key-value data from a DataFrame to Kafka using a topic specified in the data
