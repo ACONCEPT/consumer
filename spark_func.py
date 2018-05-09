@@ -20,12 +20,6 @@ def getSparkSessionInstance(sparkConf):
             .getOrCreate()
     return globals()["sparkSessionSingletonInstance"]
 
-def sendKafka(itr):
-    global producer
-    producer = KafkaWriter(config.TESTING_SERVER)
-    for record in itr:
-        producer.produce_debug(json.dumps(record))
-
 def send_validation(itr):
     topic = "vaidated"
     producer = getjsonproducer(config.TESTING_SERVER)
@@ -40,6 +34,7 @@ def send_rejection(itr):
 
 def stream_validation(bootstrap_servers,datasource,table,validation_config):
     sc = SparkContext(appName="PythonSparkStreamingKafka")
+    sc.addPyFile("{}/config/config.py".format(os.environ["PROJECT_HOME"]))
     sqlc = SQLContext(sc)
     ssc = StreamingContext(sc,5)
     jdbc_url , jdbc_properties = get_url(datasource)
@@ -73,6 +68,14 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     #decode json to ds
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
+
+    def sendKafka(itr):
+        from kafka import KafkaProducer
+        import config
+        producer = KafkaProducer(bootstrap_servers=config.BOOTSTRAP_SERVERS,\
+                                 value_serializer=lambda v: json.dumps(v).encode("utf-8"))
+        for record in itr:
+            producer.produce_debug(json.dumps(record))
 
 
     rule = validation_config[0]
