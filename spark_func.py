@@ -91,13 +91,11 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             stream_df = spark.createDataFrame(rdd)
             validated = stream_df.join(dependencies[rule.name],on = list(config.keys()))
             invalid = stream_df.join(dependencies[rule.name],on = list(config.keys()),how = "left_outer")
-            validated.toJSON().foreachPartition(sendKafka)
-#            validated.toJSON().foreachPartition(send_validation)
-#            if validated.count() > 0:
-#                validated.toJSON().foreachPartition(send_validation)
-#            if invalid.cont() > 0 :
-#                invalid.toJSON().foreachPartition(send_rejection)
+            valid_json = validated.toJSON().collect()
+            for data in valid_json:
+                producer.produce_valid(data)
         except ValueError as e:
+
             producer.produce_debug("restart the stream producer! ")
 
     validation_functions = {"check_exists":check_exists}
