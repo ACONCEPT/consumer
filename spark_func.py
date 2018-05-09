@@ -34,7 +34,7 @@ def send_rejection(itr):
 
 def stream_validation(bootstrap_servers,datasource,table,validation_config):
     sc = SparkContext(appName="PythonSparkStreamingKafka")
-    sc.addPyFile("{}/config/config.py".format(os.environ["PROJECT_HOME"]))
+#    sc.addPyFile("{}/config/config.py".format(os.environ["PROJECT_HOME"]))
     sqlc = SQLContext(sc)
     ssc = StreamingContext(sc,5)
     jdbc_url , jdbc_properties = get_url(datasource)
@@ -46,15 +46,12 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     #get topic for ingestion
     topic = get_topic(datasource,table)
-
     def get_table_df(table):
         df = sqlc.read.jdbc(
                 url = jdbc_url,
                 table = table,
                 properties = jdbc_properties)
         return df
-
-    #create stream for injestion
 
     brokerlist = ",".join(bootstrap_servers)
     kafka_properties = {}
@@ -71,8 +68,9 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     def sendKafka(itr):
         from kafka import KafkaProducer
-        import config
-        producer = KafkaProducer(bootstrap_servers=config.BOOTSTRAP_SERVERS,\
+        with open(os.environ["HOME"]  + "/bootstrap_servers.json","r") as f:
+            servers = f.read().split(",")
+        producer = KafkaProducer(bootstrap_servers=servers,\
                                  value_serializer=lambda v: json.dumps(v).encode("utf-8"))
         for record in itr:
             producer.produce_debug(json.dumps(record))
