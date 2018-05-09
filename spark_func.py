@@ -20,18 +20,6 @@ def getSparkSessionInstance(sparkConf):
             .getOrCreate()
     return globals()["sparkSessionSingletonInstance"]
 
-def send_validation(itr):
-    topic = "vaidated"
-    producer = getjsonproducer(config.TESTING_SERVER)
-    for record in itr:
-        producer.send(topic,json.dumps(record))
-
-def send_rejection(itr):
-    topic = "rejected"
-    producer = getjsonproducer(config.TESTING_SERVER)
-    for record in itr:
-        producer.send(topic,json.dumps(record))
-
 def stream_validation(bootstrap_servers,datasource,table,validation_config):
     sc = SparkContext(appName="PythonSparkStreamingKafka")
 #    sc.addPyFile("{}/config/config.py".format(os.environ["PROJECT_HOME"]))
@@ -65,16 +53,6 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     #decode json to ds
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
-
-    def sendKafka(itr):
-        from kafka import KafkaProducer
-        with open(os.environ["HOME"]  + "/bootstrap_servers.json","r") as f:
-            servers = f.read().split(",")
-        producer = KafkaProducer(bootstrap_servers=servers,\
-                                 value_serializer=lambda v: json.dumps(v).encode("utf-8"))
-        for record in itr:
-            producer.produce_debug(json.dumps(record))
-
 
     rule = validation_config[0]
     def check_exists(time,rdd):
