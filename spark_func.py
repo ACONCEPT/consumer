@@ -28,34 +28,15 @@ def sendKafka(itr):
 
 def send_validation(itr):
     topic = "vaidated"
-    poducer = getjsonproducer(config.TESTING_SERVER)
+    producer = getjsonproducer(config.TESTING_SERVER)
     for record in itr:
         producer.send(topic,json.dumps(record))
-#        producer.produce_valid(json.dumps(record))
 
 def send_rejection(itr):
     topic = "rejected"
-    poducer = getjsonproducer(config.TESTING_SERVER)
+    producer = getjsonproducer(config.TESTING_SERVER)
     for record in itr:
         producer.send(topic,json.dumps(record))
-#        producer.produce_reject(json.dumps(record))
-
-#def check_exists(self,record,config = False,dependency = False):
-#    produce_debug("running check_exists {}, {}".format(config, dependency))
-#    query =[]
-#    for record_col,dep_col in config.items():
-#        query.append("{} = {}".format(dep_col,record[record_col]))
-#        query = " AND ".join(query)
-#        #check if record exists in sql table
-#        if recordexists >= 1:
-#            valid = True
-#        else:
-#            valid = False
-#        return valid
-
-#def check_exists(rodd):
-#    spark = getSparkSessionInstance(rdd.context.getConf())
-
 
 def stream_validation(bootstrap_servers,datasource,table,validation_config):
     sc = SparkContext(appName="PythonSparkStreamingKafka")
@@ -109,12 +90,12 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             stream_df = spark.createDataFrame(rdd)
             validated = stream_df.join(dependencies[rule.name],on = list(config.keys()))
             invalid = stream_df.join(dependencies[rule.name],on = list(config.keys()),how = "left_outer")
-#            validated.toJSON().foreachPartition(sendKafka)
+            validated.toJSON().foreachPartition(sendKafka)
 #            validated.toJSON().foreachPartition(send_validation)
-            if validated.count() > 0:
-                validated.toJSON().foreachPartition(send_validation)
-            if invalid.cont() > 0 :
-                invalid.toJSON().foreachPartition(send_rejection)
+#            if validated.count() > 0:
+#                validated.toJSON().foreachPartition(send_validation)
+#            if invalid.cont() > 0 :
+#                invalid.toJSON().foreachPartition(send_rejection)
         except ValueError as e:
             producer.produce_debug("restart the stream producer! ")
 
