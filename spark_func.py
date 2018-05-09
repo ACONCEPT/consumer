@@ -73,14 +73,12 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             for data in valid_json:
                 producer.produce_valid(data)
         except ValueError as e:
-
             producer.produce_debug("restart the stream producer! ")
 
     validation_functions = {"check_exists":check_exists}
 #    module = sys.modules[__name__]
 #    validator = getattr(module,rule.method)
     validator = validation_functions.get(rule.method)
-
     data_ds.foreachRDD(validator)
     ssc.start()
     ssc.awaitTermination()
