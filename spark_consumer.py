@@ -6,11 +6,24 @@ from pyspark.streaming.kafka import KafkaUtils
 from pyspark.sql import DataFrameReader
 from pyspark.sql.utils import IllegalArgumentException
 from helpers.get_data import get_url
-from helpers.kafka import KafkaWriter, get_topic
+from helpers.kafka import KafkaWriter, get_topic, getproducer
 import json, math, datetime
 
 def methodlist(obj):
     return [x for x in dir(obj) if x[0] != "_"]
+
+def row_handler(rdd_row):
+    print("row handler got rdd row {}".format(rdd_row))
+
+def sendkafka(messages):
+    producer = getproducer("localhost:9092")
+    print("in sendkafka")
+    for message in messages:
+        print("in sendkafka")
+        producer.send_messages('debug', message)
+
+def rdd_handler(rdd):
+    rdd.foreach(row_handler)
 
 class StreamValidation(object):
     """
@@ -26,6 +39,7 @@ class StreamValidation(object):
     after all dependencies are loaded, a kafka stream is opened up for the table, and the rules
     are evaluated for each row in series while the stream is active
     all messages in the queue are processed
+
 
     """
     def __init__(self,\
@@ -75,24 +89,10 @@ class StreamValidation(object):
 
     def start_stream(self):
         try:
-            self.ssc.start()
+           self.ssc.start()
         except IllegalArgumentException as e:
             self.producer.produce_debug(" stream ran without actionable output ")
         self.ssc.awaitTermination()
-
-    def validation_handler(self,datetime,message):
-#        records = message.collect()
-        self.produce_debug("made it to validation handler with values {} and {} records are {}".format(datetime,message,records))
-        self.produce_debug(records)
-        for record in records:
-            self.produce_debug("processing a record... ")
-            if isinstance(record,str):
-                record = json.loads(record)
-            if "record" in list(record.keys()):
-                record = record["record"]
-            validity = self.validation_method(record,self.validation_rule.config,self.validation_rule.dependencies[0])
-            self.produce_debug("record validity {}".format(validity))
-            self.producer.send_next(record, validity, self.validation_rule.rejectionrule)
 
     def create_validation_stream(self):
         topic = get_topic(self.datasource,self.table)
@@ -100,18 +100,30 @@ class StreamValidation(object):
         self.produce_debug("creating directstream on topic {}\nbrokerlist {}".format(topic,brokerlist))
         kafka_properties = {}
         kafka_properties["metadata.broker.list"] = brokerlist
-#        kafka_properties["auto.offset.reset"] = "smallest"
         kafkaStream = KafkaUtils.createDirectStream(self.ssc,\
                                                     [topic],\
                                                     kafka_properties)
 
         data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
-        for rule in self.stream_rules:
-            self.produce_debug("processing rule {} on {}".format(rule,self.table))
-            self.validation_method = getattr(self,rule.method)
-            self.validation_rule = rule
-            data_ds.foreachRDD(self.validation_handler)
+        data_ds.foreachRDD(rdd_handler)
+
+#        sent_data = data_ds.mapPartitions(sendkafka)
+#        messageDF = self.sc.createDataFrame(sent_data, "string")
+#        messageDF.write\
+#                .format("kafka")\
+#                .option("topic", topic_name)\
+#                .option("kafka.bootstrap.servers", bootstrap_servers)\
+#                .save()
+
+
         self.start_stream()
+#        self.produce_debug("data_ds is {}".format(type(data_ds)))
+#        for rule in self.stream_rules:
+#            self.produce_debug("processing rule {} on {}".format(rule,self.table))
+#            self.validation_method = getattr(self,rule.method)
+#            self.validation_rule = rule
+#            data_ds.foreachRDD(self.validation_handler)
+#        self.start_stream()
 
     def evaluate_rules(self,force_table = False):
         self.stream_rules = []
