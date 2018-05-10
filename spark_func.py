@@ -76,7 +76,7 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 producer.produce_valid(data)
             del valid_json
             invalid_json = invalid.toJSON().collect()
-            for data in valid_json:
+            for data in invalid_json:
                 producer.produce_invalid(data)
         except ValueError as e:
             producer.produce_debug("restart the stream producer! ")
