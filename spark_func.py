@@ -1,6 +1,5 @@
-import os
-import sys
 from helpers.get_data import get_url
+
 from pyspark import SparkContext, SQLContext
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
@@ -58,11 +57,10 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     #decode json to ds
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
-    data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
-
+    #data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
 
     def check_exists(time,rdd):
-        producer.produce_debug("in process.. {}".format(time))
+#        producer.produce_debug("in process.. {}".format(time))
 
         # get Context for this rdd
         spark = getSparkSessionInstance(rdd.context.getConf())
@@ -125,7 +123,7 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 else:
                     return True
 
-            mapped = joined.map(lambda x:mapfunc(x[],x[],x[])).cache()
+#            mapped = joined.map(lambda x:mapfunc(x[],x[],x[])).cache()
             #validated items are indicated by a successful inner join on the configured columns
             valildated = mapped.filter(lambda x: x[0] == False)
 
@@ -151,16 +149,10 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             producer.produce_debug("restart the stream producer! {}".format(e))
 
     #hardcoded which validation functions are active
-    validation_functions = {"check_exists":check_exists,\
-                            "check_lead_time":check_leadtime}
+    validation_functions = {"check_exists":check_exists }
+
 
     for rule in validation_config:
-        if rule.method == "check_leadtime":
-            rule.config = {}
-            rule.config["start_column"] = "order_creation_date"
-            rule.config["stop_column"] = "order_expected_delivery"
-            rule.config["leadtime_column"] = "delivery_lead_time"
-            rule.config["join_columns"] = ["part_id","customer_id"]
         validator = validation_functions.get(rule.method)
         data_ds.foreachRDD(validator)
 
@@ -168,3 +160,9 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     ssc.awaitTermination()
 
 
+#        if rule.method == "check_leadtime":
+#            rule.config = {}
+#            rule.config["start_column"] = "order_creation_date"
+#            rule.config["stop_column"] = "order_expected_delivery"
+#            rule.config["leadtime_column"] = "delivery_lead_time"
+#            rule.config["join_columns"] = ["part_id","customer_id"]

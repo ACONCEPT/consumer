@@ -8,8 +8,10 @@ import json
 def insert_db(dbc,**kwargs):
     base_stmt = "insert into {} ({}) values ({});"
     table = kwargs.pop("table")
+    commit = kwargs.pop("commit",False)
     column_definitions = dbc.descriptions.get(table)
     cols = []
+    commit_interval = 100
     vals = []
     for column,data in kwargs.items():
         column_type = column_definitions.get(column,False)
@@ -20,31 +22,39 @@ def insert_db(dbc,**kwargs):
             val = "{}".format(str(int(data)))
         elif "TIME" in column_type.upper():
             val = "TIMESTAMP '{}'".format(data.isoformat())
+
         else:
             val  = data
         vals.append(val)
     columns = ", ".join(cols)
     values = ", " .join(vals)
     stmt = base_stmt.format(table,columns,values)
-    dbc.execute_cursor(stmt)
+    dbc.execute_cursor(stmt,commit = commit)
 
 def consume_stats(bootstrap_servers, datasource):
     dbc = DBConnection(datasource)
     dbc.get_base_table_descriptions()
-    consumer = KafkaConsumer(topic,\
+    consumer = KafkaConsumer("stats",\
             group_id  = "test",\
             bootstrap_servers=bootstrap_servers,\
             auto_offset_reset ="smallest",\
             value_deserializer =lambda m: json.loads(m.decode('utf-8')))
-    consumer.subscribe("stats")
     insert_kwargs = {}
-    issert_kwargs.update({"table":"tracked_topics"})
+    insert_kwargs.update({"table":"tracked_topics"})
     for message in consumer:
-        stat_topic = message.value["topic"]
-        stat_count = message.value["count"]
-        insert_kwargs.update({"topic_name":str(stat_topic),\
-                              "quantity":int(stat_count)})
-        insert_db(dbc,**insert_kwargs)
+        jsonmsg = json.loads(message.value)
+        print(jsonmsg)
+        try:
+            stat_topic = jsonmsg["topic"]
+            stat_count = jsonmsg["count"]
+            stat_time = jsonmsg["timestamp"]
+            insert_kwargs.update({"topic_name":str(stat_topic),\
+                              "quantity":int(stat_count),\
+                              "timestamp":stat_time})
+            insert_db(dbc,**insert_kwargs)
+        except:
+            pass
+
 
 if __name__ == '__main__':
     global DEFINITIONS
