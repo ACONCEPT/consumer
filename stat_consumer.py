@@ -29,7 +29,7 @@ def insert_db(dbc,**kwargs):
     columns = ", ".join(cols)
     values = ", " .join(vals)
     stmt = base_stmt.format(table,columns,values)
-    dbc.execute_cursor(stmt,commit = commit)
+    dbc.execute_cursor(stmt)
 
 def consume_stats(bootstrap_servers, datasource):
     dbc = DBConnection(datasource)
@@ -41,7 +41,7 @@ def consume_stats(bootstrap_servers, datasource):
             value_deserializer =lambda m: json.loads(m.decode('utf-8')))
     insert_kwargs = {}
     insert_kwargs.update({"table":"tracked_topics"})
-    for message in consumer:
+    for i,  message in enumerate(consumer):
         jsonmsg = json.loads(message.value)
         print(jsonmsg)
         try:
@@ -52,8 +52,11 @@ def consume_stats(bootstrap_servers, datasource):
                               "quantity":int(stat_count),\
                               "timestamp":stat_time})
             insert_db(dbc,**insert_kwargs)
+            if i % 25  == 0:
+                dbc.commit_connection()
         except:
             pass
+    dbc.commit_connection()
 
 
 if __name__ == '__main__':
