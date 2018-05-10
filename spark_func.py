@@ -60,8 +60,6 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
 
-    #hardcoded which validation functions are active
-    validation_functions = {"check_exists":check_exists}
 
     def check_exists(time,rdd):
         producer.produce_debug("in process.. {}".format(time))
@@ -73,16 +71,68 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
         config = rule.config
 
         # only expecting one dependency for this rule, so take first item from list by default
-        dependencies = dependencies.get(rule.name)[0]
+        dependency = dependencies.get(rule.name)[0]
         try:
             #turn current streamdata into dataframe
             stream_df = spark.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
 
             #validated items are indicated by a successful inner join on the configured columns
-            validated = stream_df.join(dependencies[rule.name],on = list(config.keys()))
+            validated = stream_df.join(dependency,on = list(config.keys()))
 
             #invalid items are indicated by a left outer join on the dependenc table on the configured column
-            invalid = stream_df.join(dependencies[rule.name],on = list(config.keys()),how = "left_outer")
+            invalided = stream_df.join(dependency,on = list(config.keys()),how = "left_outer")
+
+            # collect the valid and invalid data and send them to their respective topics
+            valid_json = validated.toJSON().collect()
+            for data in valid_json:
+                producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
+                #producer.produce_valid(data)
+            del valid_json
+            del validated
+
+            invalid_json = invalided.toJSON().collect()
+            for data in invalid_json:
+                producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
+                #producer.produce_reject(data)
+            del invalid_json
+            del invalided
+
+        except ValueError as e:
+            producer.produce_debug("restart the stream producer! {}".format(e))
+
+    def check_lead_time(time,rdd):
+        producer.produce_debug("in process.. {}".format(time))
+
+        # get Context for this rdd
+        spark = getSparkSessionInstance(rdd.context.getConf())
+
+        # get coniguration out of rule
+        config = rule.config
+
+        # only expecting one dependency for this rule, so take first item from list by default
+        dependency = dependencies.get(rule.name)[0]
+        try:
+            #turn current streamdata into dataframe
+            stream_df = spark.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
+            joined = stream_df.join(dependency, on = config.get("join_columns"))
+            def mapfunc(record):
+                start_column = record[config["start_column"]]
+                stop_column = record[config["stop_column"]]
+                leadtime_column = record[config["leadtime_column"]]
+                min_stop = start_column + timedelta(days = leadtime_column)
+                if stop_column < min_stop:
+                    return False
+                else:
+                    return True
+
+            mapped = joined.map(lambda x:mapfunc(x[],x[],x[])).cache()
+            #validated items are indicated by a successful inner join on the configured columns
+            valildated = mapped.filter(lambda x: x[0] == False)
+
+            validated = stream_df.join(dependency,on = list(config.keys()))
+
+            #invalid items are indicated by a left outer join on the dependenc table on the configured column
+            invalid = stream_df.join(dependency,on = list(config.keys()),how = "left_outer")
 
             # collect the valid and invalid data and send them to their respective topics
             valid_json = validated.toJSON().collect()
@@ -91,18 +141,28 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 #producer.produce_valid(data)
 
             del valid_json
-
             invalid_json = invalid.toJSON().collect()
             for data in invalid_json:
                 producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
                 #producer.produce_reject(data)
+            del invalid_json
 
         except ValueError as e:
             producer.produce_debug("restart the stream producer! {}".format(e))
 
+    #hardcoded which validation functions are active
+    validation_functions = {"check_exists":check_exists,\
+                            "check_lead_time":check_leadtime}
+
     for rule in validation_config:
+        if rule.method == "check_leadtime":
+            rule.config = {}
+            rule.config["start_column"] = "order_creation_date"
+            rule.config["stop_column"] = "order_expected_delivery"
+            rule.config["leadtime_column"] = "delivery_lead_time"
+            rule.config["join_columns"] = ["part_id","customer_id"]
         validator = validation_functions.get(rule.method)
-    data_ds.foreachRDD(validator)
+        data_ds.foreachRDD(validator)
 
     ssc.start()
     ssc.awaitTermination()
