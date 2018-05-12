@@ -1,6 +1,4 @@
 from helpers.get_data import get_url
-
-
 from pyspark import SparkContext, SQLContext
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
@@ -40,6 +38,7 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 url = jdbc_url,
                 table = table,
                 properties = jdbc_properties)
+        df.describe()
         return df
 
     brokerlist = ",".join(bootstrap_servers)
@@ -59,50 +58,49 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     #decode json to ds
     data_ds = kafkaStream.map(lambda v: json.loads(v[1]))
+
+    # to print a count of the batch to spark console...
     #data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
 
-    def check_exists(time,rdd):
-#        producer.produce_debug("in process.. {}".format(time))
+    def wrap_rule(rulefunc):
+        def wrapped_rule(time,rdd):
+            # extract configuration from rule and get dependencies for current rule
+            ruleconfig = rule.config
+            dependencies = dependencies.get(rule.name)
 
-        # get Context for this rdd
-        spark = getSparkSessionInstance(rdd.context.getConf())
+            # filter out ay already invalidated records from the stream dataframe
+            stream_df = stream_df.join(invalidated.withcol("ident",lit(1)),["id"],"left_outer").where(col("ident").isNull())
 
-        ruleconfig = rule.config
-        joinon = ruleconfig.get("join_cols")
-        identcol = ruleconfig.get("identcol")
+            # attempt processing of actual rule on stream df
+            try:
+                #get validated and new invalidated Df from the rule application
+                #valid df exists in main func namespace, this function overwrites it with the new version after this rule
+                validated, new_invalid = rulefunc(rdd)
 
-        # only expecting one dependency for this rule, so take first item from list by default
-        dependency = dependencies.get(rule.name)[0]
-        dependency.show()
-        try:
-            #turn current streamdata into dataframe
-            stream_df = spark.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
-#            producer.produce_debug("joining on {}".format(joinon))
+                #unions new invalid records with the main invalidated dataframe
+                invalidated = invalidated.union(new_invalid)
 
-            #validated items are indicated by a successful inner join on the configured columns
-            validated = stream_df.join(dependency,joinon,"inner")
-            #invalid items are indicated by a left outer join on the dependenc table on the configured column
-            invalided = stream_df.join(dependency,joinon,"left_outer").where(col(identcol).isNull())
+            except ValueError as e:
 
-            # collect the valid and invalid data and send them to their respective topics
-            valid_json = validated.toJSON().collect()
-#            producer.produce_debug("valid orders {} ".format(len(valid_json)))
-            for data in valid_json:
-                producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
-                #producer.produce_valid(data)
-            del valid_json
-            del validated
+                #processing gives an emptyRDD error if the stream producer isn't running
+                producer.produce_debug("restart the stream producer! {}".format(e))
 
-            invalid_json = invalided.toJSON().collect()
-            producer.produce_debug("invalid orders {} ".format(len(invalid_json)))
-            for data in invalid_json:
-                producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
-                #producer.produce_reject(data)
-            del invalid_json
-            del invalided
+        return wrapped_rule(rulefunc)
 
-        except ValueError as e:
-            producer.produce_debug("restart the stream producer! {}".format(e))
+    def check_exists(rdd):
+        joinon = ruleconfig.get("join_on")
+
+        #rule assumes only one dependency is loaded
+        dependency = dependencies[0]
+
+        #validated items are indicated by a successful inner join on the configured columns
+        validated = stream_df.join(dependency,joinon,"inner")
+
+        #invalid items are indicated by a left outer join on the dependenc table on the configured column
+        new_invalid = stream_df.join(dependency,joinon,"left_outer").where(col(identcol).isNull())
+
+        return validated , new_invalid
+
 
     def check_lead_time(time,rdd):
         producer.produce_debug("in process.. {}".format(time))
@@ -131,26 +129,35 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             validated = stream_df.join(dependency,on = list(config.keys()))
             #invalid items are indicated by a left outer join on the dependenc table on the configured column
             invalid = stream_df.join(dependency,on = list(config.keys()),how = "left_outer")
-            # collect the valid and invalid data and send them to their respective topics
-            valid_json = validated.toJSON().collect()
-            for data in valid_json:
-                producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
-                #producer.produce_valid(data)
-            del valid_json
-            invalid_json = invalid.toJSON().collect()
-            for data in invalid_json:
-                producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
-                #producer.produce_reject(data)
+
         except ValueError as e:
             producer.produce_debug("restart the stream producer! {}".format(e))
 
     #hardcoded which validation functions are active
     validation_functions = {"check_exists":check_exists }
+    spark = getSparkSessionInstance(rdd.context.getConf())
+    stream_df = spark.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
+
+    global validated
+    global invalidated
+    validated = stream_df.filter('1 = 2')
+    invalidated = stream_df.filter('1 = 2')
 
     for rule in validation_config:
         validator = validation_functions.get(rule.method)
+        validator = wrap_rule(validator)
         data_ds.foreachRDD(validator)
 
+    # collect the valid and invalid data and send them to their respective topics
+    send_valid = validated.toJSON().collect()
+    for data in send_valid:
+        producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
+    del send_valid
+
+    send_invalid = invalid.toJSON().collect()
+    for data in send_invalid:
+        producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
+    del send_invalid
 
     ssc.start()
     ssc.awaitTermination()
