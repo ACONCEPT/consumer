@@ -1,4 +1,5 @@
 from helpers.get_data import get_url
+
 from pyspark import SparkContext, SQLContext
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
@@ -101,15 +102,16 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 #get validated and new invalidated Df from the rule application
                 #valid df exists in main func namespace, this function overwrites it with the new version after this rule
                 new_invalid = rulefunc(stream_df,ruleconfig,ruledependencies)
-
-                #unions new invalid records with the main invalidated dataframe
-                invalidated = invalidated.union(new_invalid)
+                try:
+                    invalidated = invalidated.union(new_invalid)
+                except UnboundLocalError as e:
+                    invalidated = new_invalid
 
                 #if this is the last rule to be run, send data to kafka from the valid and invalid ones
                 if ruleindex[0] == ruleindex[1]:
                     stream_df = stream_df.subtract(invalidated)
                     producer.produce_debug("sending to kafka on ruleindex {}".format(ruleindex))
-                    send_valid = validated.toJSON().collect()
+                    send_valid = stream_df.toJSON().collect()
 
                     for data in send_valid:
                         producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
