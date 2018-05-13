@@ -66,20 +66,10 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     def wrap_rule(rulefunc):
         def wrapped_rule(time,rdd):
-            # grab driver global variables to use
-#            global dependencies
             global ruleindex
 
             spark = getSparkSessionInstance(rdd.context.getConf())
             stream_df = sqlc.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
-
-            #if validated is None:
-            #    producer.produce_debug("creating blank validated df")
-            #    validated = stream_df.filter('1 = 2')
-
-            #if invalidated is None:
-            #    producer.produce_debug("creating blank invalidated df")
-            #    invalidated = stream_df.filter('1 = 2')
 
             # extract configuration from rule and get dependencies for current rule
             ruleconfig = rule.config
