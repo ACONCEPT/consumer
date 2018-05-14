@@ -66,7 +66,7 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     # to print a count of the batch to spark console...
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
 
-    def wrap_validator(rulefunc):
+    def wrap_validator(rulefuncs):
         def wrapped_rule(time,rdd):
             global ruleindex
             spark = getSparkSessionInstance(rdd.context.getConf())
@@ -75,41 +75,30 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
             ruleconfig = rule.config
             ruledependencies = dependencies.get(rule.name)
             #message for debugger
-
             msg = ["{} : {}".format(k,v) for k,v in ruleconfig.items()]
             msg = ["in rule.. {} config is".format(rule.name)] + msg
             msg.append("{} dependencies for this rule".format(ruledependencies))
             msg.append("ruleindex is {}".format(ruleindex))
             producer.produce_debug("\n".join(msg))
-
             try:
-                stream_df = stream_df.subtract(invalidated)
-            except NameError as e:
-                pass
-            try:
-                #get validated and new invalidated Df from the rule application
-                #valid df exists in main func namespace, this function overwrites it with the new version after this rule
-                new_invalid = rulefunc(stream_df,ruleconfig,ruledependencies)
-                try:
-                    invalidated = invalidated.union(new_invalid)
-                except UnboundLocalError as e:
-                    invalidated = new_invalid
-
-                #if this is the last rule to be run, send data to kafka from the valid and invalid ones
-                if ruleindex[0] == ruleindex[1]:
+                for rule in rulefuncs:
+                    # iterate over the rule functions and update the stream and invalidated dataframes accordingly
+                    new_invalid = rulefunc(stream_df,ruleconfig,ruledependencies)
+                    try:
+                        invalidated = invalidated.union(new_invalid)
+                    except UnboundLocalError as e:
+                        invalidated = new_invalid
                     stream_df = stream_df.subtract(invalidated)
-                    producer.produce_debug("sending to kafka on ruleindex {}".format(ruleindex))
-                    send_valid = stream_df.toJSON().collect()
-                    for data in send_valid:
-                        producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
-                    del send_valid
-                    send_invalid = invalidated.toJSON().collect()
-                    for data in send_invalid:
-                        producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
-                    del send_invalid
-                    producer.stat_remnants()
-                else:
-                    producer.produce_debug("NOT sending to kafka on ruleindex {}".format(ruleindex))
+                producer.produce_debug("sending to kafka on ruleindex {}".format(ruleindex))
+                send_valid = stream_df.toJSON().collect()
+                for data in send_valid:
+                    producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
+                del send_valid
+                send_invalid = invalidated.toJSON().collect()
+                for data in send_invalid:
+                    producer.send_next(record = data, validity = False, rejectionrule = rule.rejectionrule)
+                del send_invalid
+                producer.stat_remnants()
             except ValueError as e:
                 #processing gives an emptyRDD error if the stream producer isn't running
                 producer.produce_debug("restart the stream producer! {}".format(e))
@@ -122,17 +111,10 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     countrules = 0
     producer.produce_debug('validation config {}'.format(validation_config))
     rulecount = len(validation_config)
+    validators = [validation_functions.get(r.method) for r in validation_config]
+    validator = wrap_validators(validators)
+    data_ds.foreachRDD(validator)
 
-
-    for rule in validation_config:
-        countrules += 1
-        ruleindex = (countrules,rulecount)
-        validator = validation_functions.get(rule.method)
-        validator = wrap_validator(validator)
-        message = ['processing rule {}'.format(rule),\
-                   "wrapped validator is {}".format(validator)]
-        data_ds.foreachRDD(validator)
-        ssc.start()
-        ssc.awaitTermination()
-        producer.produce_debug("\n".join(message))
+    ssc.start()
+    ssc.awaitTermination()
 
