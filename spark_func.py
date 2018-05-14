@@ -31,7 +31,6 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     #create kafka producer in master
     producer = KafkaWriter(bootstrap_servers,datasource,table)
-    producer.produce_debug("validation config {}".format(validation_config))
 
     #get topic for ingestion
     topic = get_topic(datasource,table)
@@ -47,7 +46,6 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     brokerlist = ",".join(bootstrap_servers)
     kafka_properties = {}
     kafka_properties["metadata.broker.list"] = brokerlist
-    producer.produce_debug("intiializing stream on topic {}".format(topic))
     kafkaStream = KafkaUtils.createDirectStream(ssc,\
                                                 [topic],\
                                                 kafka_properties)
@@ -56,7 +54,6 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
     for rule in validation_config:
         dependencies[rule.name] = []
         for d in rule.dependencies:
-            producer.produce_debug("getting dependency for {}".format(d))
             name = rule.name
             dependencies[rule.name].append(get_table_df(d))
 
@@ -65,31 +62,36 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
 
     # to print a count of the batch to spark console...
     data_ds.count().map(lambda x:'Records in this batch: %s' % x).union(data_ds).pprint()
-
     def wrap_validator(rulefuncs):
-        def wrapped_rule(time,rdd):
-            global ruleindex
+        def wrapped_rules(time,rdd):
             spark = getSparkSessionInstance(rdd.context.getConf())
-            stream_df = sqlc.createDataFrame(rdd.map(lambda v:json.loads(v)["record"]))
+            try:
+                stream_df = sqlc.createDataFrame(rdd.map(lambda v:json.loads(v)))
+            except ValueError as e:
+                producer.produce_debug("producer is empty, closing spark... ")
+                exit()
+
             # extract configuration from rule and get dependencies for current rule
             ruleconfig = rule.config
-            ruledependencies = dependencies.get(rule.name)
-            #message for debugger
-            msg = ["{} : {}".format(k,v) for k,v in ruleconfig.items()]
-            msg = ["in rule.. {} config is".format(rule.name)] + msg
-            msg.append("{} dependencies for this rule".format(ruledependencies))
-            msg.append("ruleindex is {}".format(ruleindex))
-            producer.produce_debug("\n".join(msg))
             try:
-                for rule in rulefuncs:
+                for arule in rulefuncs:
                     # iterate over the rule functions and update the stream and invalidated dataframes accordingly
-                    new_invalid = rulefunc(stream_df,ruleconfig,ruledependencies)
+                    rulename = arule[0]
+                    ruleconfig = arule[1]
+                    func = arule[2]
+                    ruledependencies = dependencies.get(rulename)
+                    new_invalid = func(stream_df,ruleconfig,ruledependencies)
+                    msg = ["\n\nexecuting rule name {}".format(rulename)]
+                    msg += ["func {}".format(func.__name__)]
+                    msg += ["config {}".format(ruleconfig)]
+                    producer.produce_debug("\n".join(msg))
                     try:
                         invalidated = invalidated.union(new_invalid)
                     except UnboundLocalError as e:
                         invalidated = new_invalid
+
                     stream_df = stream_df.subtract(invalidated)
-                producer.produce_debug("sending to kafka on ruleindex {}".format(ruleindex))
+
                 send_valid = stream_df.toJSON().collect()
                 for data in send_valid:
                     producer.send_next(record = data, validity = True, rejectionrule = rule.rejectionrule)
@@ -101,20 +103,25 @@ def stream_validation(bootstrap_servers,datasource,table,validation_config):
                 producer.stat_remnants()
             except ValueError as e:
                 #processing gives an emptyRDD error if the stream producer isn't running
-                producer.produce_debug("restart the stream producer! {}".format(e))
-        return wrapped_rule
+                producer.produce_debug("killing spark proc... got empty RDD {}".format(e))
+                exit()
+        return wrapped_rules
 
     #hardcoded which validation functions are active
+
     validation_functions = {"check_exists":check_exists ,\
                             "check_lead_time":check_lead_time}
-    global ruleindex
-    countrules = 0
-    producer.produce_debug('validation config {}'.format(validation_config))
-    rulecount = len(validation_config)
-    validators = [validation_functions.get(r.method) for r in validation_config]
-    validator = wrap_validators(validators)
+
+    list_of_rules = [(r.name,r.config,validation_functions.get(r.method)) for r in validation_config]
+    validator = wrap_validator(list_of_rules)
     data_ds.foreachRDD(validator)
+
+    msg = ["\n\n\nabout to start spark StreamingContext.."]
+    msg += ["topic {}".format(topic)]
+    msg += ["list of rules {}".format([x[0] for x in list_of_rules])]
+    msg += ["list of dependencies {}".format(", ".join(list(dependencies.keys())))]
+    producer.produce_debug("\n".join(msg))
+
 
     ssc.start()
     ssc.awaitTermination()
-
